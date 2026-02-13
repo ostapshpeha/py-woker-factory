@@ -58,8 +58,7 @@ class User(Base):
         return f"<User(id={self.id}, email={self.email}, is_active={self.is_active})>"
 
     @classmethod
-    def create(
-        cls, email: str, raw_password: str) -> "User":
+    def create(cls, email: str, raw_password: str) -> "User":
         """
         Factory method to create a new User instance.
 
@@ -112,9 +111,7 @@ class UserProfileModel(Base):
     __table_args__ = (UniqueConstraint("user_id"),)
 
     def __repr__(self):
-        return (
-            f"<UserProfileModel(id={self.id}, first_name={self.first_name}, last_name={self.last_name}"
-        )
+        return f"<UserProfileModel(id={self.id}, first_name={self.first_name}, last_name={self.last_name}"
 
 
 class TokenBaseModel(Base):

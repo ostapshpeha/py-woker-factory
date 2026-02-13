@@ -32,6 +32,7 @@ class TaskStatus(str, Enum):
 
 # --- MODELS ---
 
+
 class WorkerModel(Base):
     __tablename__ = "workers"
 
@@ -45,9 +46,7 @@ class WorkerModel(Base):
     # port: Зовнішній порт для VNC (напр. 6081), щоб юзер міг підключитися
     vnc_port: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    status: Mapped[WorkerStatus] = mapped_column(
-        String, default=WorkerStatus.OFFLINE
-    )
+    status: Mapped[WorkerStatus] = mapped_column(String, default=WorkerStatus.OFFLINE)
 
     # Зв'язок з задачами (історія завдань цього воркера)
     tasks: Mapped[List["TaskModel"]] = relationship(
@@ -64,12 +63,15 @@ class TaskModel(Base):
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Результат роботи (важливо!)
-    result: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON або текст відповіді
-    logs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Логи помилок, якщо були
+    result: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )  # JSON або текст відповіді
+    logs: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )  # Логи помилок, якщо були
 
-    status: Mapped[TaskStatus] = mapped_column(
-        String, default=TaskStatus.QUEUED
-    )
+    status: Mapped[TaskStatus] = mapped_column(String, default=TaskStatus.QUEUED)
+    screenshot: Mapped[Optional[str]] = mapped_column(String(255))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
