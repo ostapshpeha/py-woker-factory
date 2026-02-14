@@ -26,7 +26,8 @@ class DockerService:
         """
         try:
             env_vars = {
-                "VNC_PW": vnc_password,
+                "VNC_USER": "kasm_user",     # Стандартний юзер для вебу
+                "VNC_PW": "qwerty12345",     # Тимчасовий простий пароль без спецсимволів
                 "VNC_VIEW_ONLY": "false",
                 "APP_ARGS": "--no-sandbox",
             }

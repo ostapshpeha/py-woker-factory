@@ -42,10 +42,8 @@ async def create_worker_endpoint(
         # На цьому етапі статус воркера має бути STARTING, а порти/id - None
         worker = await crud.create_worker(db, worker_in, current_user.id)
 
-        # 2. Генеруємо унікальне ім'я та пароль для контейнера
-        # Ім'я має бути унікальним на рівні всього хоста
         container_name = f"factory_worker_{worker.id}_{current_user.id}"
-        vnc_password = secrets.token_urlsafe(8)  # Надійна генерація пароля
+        vnc_password = secrets.token_hex(8)
 
         # 3. Запускаємо Docker-контейнер у фоновому потоці
         try:
@@ -71,7 +69,7 @@ async def create_worker_endpoint(
             vnc_port=host_port,
             status=WorkerStatus.IDLE  # Контейнер піднявся і чекає на задачі
         )
-
+        updated_worker.vnc_password = vnc_password
         # (Опціонально) Ти можеш додати vnc_password у WorkerRead схему,
         # щоб фронтенд міг показати його юзеру для ручного входу по VNC
         return updated_worker
