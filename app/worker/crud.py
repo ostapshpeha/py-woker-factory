@@ -91,6 +91,38 @@ async def delete_worker(
     return worker
 
 
+async def update_worker_docker_info(
+        session: AsyncSession,
+        worker_id: int,
+        container_id: str,
+        vnc_port: int,
+        status: WorkerStatus
+) -> WorkerModel:
+    query = select(WorkerModel).where(WorkerModel.id == worker_id)
+    result = await session.execute(query)
+    worker = result.scalars().first()
+
+    if worker:
+        # 2. Оновлюємо дані
+        worker.container_id = container_id
+        worker.vnc_port = vnc_port
+        worker.status = status
+
+        # 3. Зберігаємо зміни. УВАГА: commit() скидає всі атрибути об'єкта!
+        await session.commit()
+
+    # 4. ФІНАЛЬНИЙ ЗАПИТ: Завантажуємо свіжого воркера РАЗОМ із тасками
+    # Саме цей об'єкт піде в Pydantic, і MissingGreenlet не виникне
+    final_query = (
+        select(WorkerModel)
+        .options(selectinload(WorkerModel.tasks)) # <--- Ключовий рядок!
+        .where(WorkerModel.id == worker_id)
+    )
+    final_result = await session.execute(final_query)
+
+    return final_result.scalars().first()
+
+
 async def create_task(
     session: AsyncSession, task_in: TaskCreate, worker_id: int, user_id: int
 ) -> TaskModel:
