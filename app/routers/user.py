@@ -1,23 +1,22 @@
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request, Query
 from sqlalchemy import select, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.auth.dependencies import get_current_user, get_current_user_profile
-from src.auth.models import (
+from app.core.s3 import S3Service
+from app.user.dependencies import get_current_user, get_current_user_profile
+from app.models.user import (
     User,
-    UserGroup,
-    UserGroupEnum,
     ActivationTokenModel,
     RefreshTokenModel,
     UserProfileModel,
     PasswordResetTokenModel,
 )
-from src.auth.schemas import (
+from app.schemas.user import (
     LoginRequest,
     UserCreate,
     UserResponse,
@@ -34,19 +33,15 @@ from src.auth.schemas import (
     PasswordResetRequestSchema,
     UserProfileUpdate,
 )
-from src.auth.security import (
+from app.user.security import (
     create_access_token,
     verify_password,
     generate_secure_token,
 )
-from src.core.config import settings
-from src.core.database import get_async_session
-from src.core.s3 import S3Service
-from src.core.utils import process_avatar
-from src.notifications.email import send_email
-from src.notifications.services.sendgrid_webhook import SendGridWebhookService
-from json import JSONDecodeError
-from src.auth.validators import validate_passwords_different
+from app.core.config import settings
+from app.db.session import get_db
+from app.core.utils import process_avatar
+from app.user.validators import validate_passwords_different
 
 router = APIRouter(prefix="/user", tags=["User"])
 s3_service = S3Service()
@@ -59,9 +54,7 @@ s3_service = S3Service()
     summary="Register new user",
     description="Register a new user. User must activate account via activation token.",
 )
-async def register(
-    user_data: UserCreate, session: AsyncSession = Depends(get_async_session)
-):
+async def register(user_data: UserCreate, session: AsyncSession = Depends(get_db)):
     """
     Register new user
     """
@@ -73,20 +66,8 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
-    result = await session.execute(
-        select(UserGroup).where(UserGroup.name == UserGroupEnum.USER.value)
-    )
-    user_group = result.scalar_one_or_none()
-
-    if not user_group:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="User group not found. Please run database migrations first.",
-        )
-
     new_user = User(
         email=str(user_data.email),
-        group_id=user_group.id,
     )
     new_user.password = user_data.password
 
@@ -103,19 +84,13 @@ async def register(
     await session.refresh(new_user)
 
     activation_link = (
-        f"http://localhost:8000/api/v1/user/activate/{activation_token_value}"
-    )
-
-    send_email(
-        to_email=new_user.email,
-        template_id=settings.SENDGRID_ACTIVATION_TEMPLATE_ID,
-        data={"activation_link": activation_link},
-        email_type="email_activation",
+        f"http://localhost:8000/api/v1/user/activate?token={activation_token_value}"
     )
     return UserRegistrationResponseSchema(
         id=new_user.id,
         email=new_user.email,
         is_active=new_user.is_active,
+        activate_token=activation_token_value
     )
 
 
@@ -125,9 +100,7 @@ async def register(
     summary="Login",
     description="Login and receive access token. Refresh token is issued together.",
 )
-async def login(
-    credentials: LoginRequest, session: AsyncSession = Depends(get_async_session)
-):
+async def login(credentials: LoginRequest, session: AsyncSession = Depends(get_db)):
     """
     User login
     """
@@ -180,26 +153,23 @@ async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
-@router.post(
-    "/activate",
+@router.get(
+    "/activate", # Змінено на GET
     response_model=ActivationResponse,
     status_code=status.HTTP_200_OK,
     summary="Activate user account",
-    description="Activate user account using activation token from email",
+    description="Activate user account using activation token from URL query string",
 )
 async def activate_user(
-    data: ActivationRequest,
-    session: AsyncSession = Depends(get_async_session),
+    token: str = Query(..., description="The activation token sent via email"),
+    session: AsyncSession = Depends(get_db),
 ):
     """
-    Activate user account.
-
-    User receives activation token via email after registration.
-    This endpoint validates the token and activates the account.
+    Activate user account via GET request.
     """
     result = await session.execute(
         select(ActivationTokenModel)
-        .where(ActivationTokenModel.token == data.token)
+        .where(ActivationTokenModel.token == token)
         .options(selectinload(ActivationTokenModel.user))
     )
 
@@ -214,7 +184,6 @@ async def activate_user(
     if activation_token.expires_at < datetime.now(timezone.utc):
         await session.delete(activation_token)
         await session.commit()
-
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Activation token has expired",
@@ -232,7 +201,10 @@ async def activate_user(
     await session.delete(activation_token)
     await session.commit()
 
-    return ActivationResponse(detail="Account successfully activated", email=user.email)
+    return ActivationResponse(
+        detail="Account successfully activated",
+        email=user.email
+    )
 
 
 @router.post(
@@ -243,7 +215,7 @@ async def activate_user(
 )
 async def refresh_access_token(
     data: TokenRefreshRequestSchema,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
 ):
 
     result = await session.execute(
@@ -310,7 +282,7 @@ async def refresh_access_token(
 )
 async def logout(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
 ):
     await session.execute(
         delete(RefreshTokenModel).where(RefreshTokenModel.user_id == current_user.id)
@@ -327,7 +299,7 @@ async def logout(
 )
 async def request_password_reset(
     data: PasswordResetRequestSchema,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
 ):
     """
     Request password reset.
@@ -364,19 +336,8 @@ async def request_password_reset(
     session.add(reset_token)
     await session.commit()
 
-    reset_link = (
-        f"http://localhost:8000/api/v1/user/password-reset/confirm/{reset_token_value}"
-    )
-
-    send_email(
-        to_email=user.email,
-        template_id=settings.SENDGRID_PASSWORD_RESET_TEMPLATE_ID,
-        data={"reset_link": reset_link},
-        email_type="password_reset",
-    )
-
     return PasswordResetResponse(
-        detail="If the email exists, a password reset link has been sent"
+        detail=f"Your reset token - {reset_token}",
     )
 
 
@@ -389,7 +350,7 @@ async def request_password_reset(
 )
 async def confirm_password_reset(
     data: PasswordResetConfirmSchema,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
 ):
     """
     Confirm password reset.
@@ -444,7 +405,7 @@ async def confirm_password_reset(
 async def change_password(
     data: PasswordChangeSchema,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
 ):
     """
     Change password for authenticated user.
@@ -492,7 +453,7 @@ async def change_password(
 async def create_user_profile(
     profile_data: UserProfileCreate,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session),
+    db: AsyncSession = Depends(get_db),
 ):
     existing_profile = await db.execute(
         select(UserProfileModel).where(UserProfileModel.user_id == user.id)
@@ -537,7 +498,7 @@ async def get_my_profile(profile: UserProfileModel = Depends(get_current_user_pr
 async def update_my_profile(
     profile_data: UserProfileUpdate,
     profile: UserProfileModel = Depends(get_current_user_profile),
-    db: AsyncSession = Depends(get_async_session),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Partially update user profile.
@@ -589,7 +550,7 @@ async def update_avatar(
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     profile: UserProfileModel = Depends(get_current_user_profile),
-    db: AsyncSession = Depends(get_async_session),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Downloads avatar, deletes old one from S3, updates DB.
@@ -616,27 +577,3 @@ async def update_avatar(
     new_avatar_url = await s3_service.generate_presigned_url(s3_key)
 
     return {"message": "Avatar updated", "avatar_url": new_avatar_url}
-
-
-@router.post(
-    "/sendgrid",
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def sendgrid_webhook(
-    request: Request,
-    session: AsyncSession = Depends(get_async_session),
-):
-    """Handle SendGrid webhook events."""
-    try:
-        events = await request.json()
-    except JSONDecodeError:
-        return {"status": "error", "detail": "Invalid JSON"}
-
-    if not isinstance(events, list):
-        return {"status": "error", "detail": "Expected event list"}
-
-    for event in events:
-        await SendGridWebhookService.process_event(event, session)
-
-    await session.commit()
-    return {"status": "ok"}

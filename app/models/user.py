@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
+from app.models.worker import WorkerModel
 from app.user.security import hash_password, verify_password, generate_secure_token
 from app.user.validators import validate_password_strength, validate_email
 from app.db.session import Base
@@ -53,13 +54,15 @@ class User(Base):
     profile: Mapped[Optional["UserProfileModel"]] = relationship(
         "UserProfileModel", back_populates="user", cascade="all, delete-orphan"
     )
+    workers: Mapped[List["WorkerModel"]] = relationship(
+        "WorkerModel", back_populates="user"
+    )
 
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, is_active={self.is_active})>"
 
     @classmethod
-    def create(
-        cls, email: str, raw_password: str) -> "User":
+    def create(cls, email: str, raw_password: str) -> "User":
         """
         Factory method to create a new User instance.
 
@@ -112,9 +115,7 @@ class UserProfileModel(Base):
     __table_args__ = (UniqueConstraint("user_id"),)
 
     def __repr__(self):
-        return (
-            f"<UserProfileModel(id={self.id}, first_name={self.first_name}, last_name={self.last_name}"
-        )
+        return f"<UserProfileModel(id={self.id}, first_name={self.first_name}, last_name={self.last_name}"
 
 
 class TokenBaseModel(Base):
