@@ -54,9 +54,7 @@ s3_service = S3Service()
     summary="Register new user",
     description="Register a new user. User must activate account via activation token.",
 )
-async def register(
-    user_data: UserCreate, session: AsyncSession = Depends(get_db)
-):
+async def register(user_data: UserCreate, session: AsyncSession = Depends(get_db)):
     """
     Register new user
     """
@@ -101,9 +99,7 @@ async def register(
     summary="Login",
     description="Login and receive access token. Refresh token is issued together.",
 )
-async def login(
-    credentials: LoginRequest, session: AsyncSession = Depends(get_db)
-):
+async def login(credentials: LoginRequest, session: AsyncSession = Depends(get_db)):
     """
     User login
     """

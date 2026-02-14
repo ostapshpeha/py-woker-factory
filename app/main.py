@@ -5,6 +5,7 @@ from app.routers.user import router as user_router
 app = FastAPI(title=settings.PROJECT_NAME)
 app.include_router(user_router, prefix="/routers/v1")
 
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "db": "connected"}

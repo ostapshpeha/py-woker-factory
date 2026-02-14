@@ -31,8 +31,8 @@ class TaskStatus(str, Enum):
 
 
 class TaskImageType(str, Enum):
-    INPUT = "INPUT"     # Початковий стан
-    RESULT = "RESULT"   # Фінальний результат
+    INPUT = "INPUT"  # Початковий стан
+    RESULT = "RESULT"  # Фінальний результат
     ERROR = "ERROR"
 
 

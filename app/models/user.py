@@ -54,7 +54,9 @@ class User(Base):
     profile: Mapped[Optional["UserProfileModel"]] = relationship(
         "UserProfileModel", back_populates="user", cascade="all, delete-orphan"
     )
-    workers: Mapped[List["WorkerModel"]] = relationship("WorkerModel", back_populates="user")
+    workers: Mapped[List["WorkerModel"]] = relationship(
+        "WorkerModel", back_populates="user"
+    )
 
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, is_active={self.is_active})>"
