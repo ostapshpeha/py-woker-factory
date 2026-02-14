@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = "testing"
     AWS_REGION: str = "eu-central-1"
     S3_BUCKET_NAME: str = "test-bucket"
+    S3_SCREENSHOT_BUCKET_NAME: str = "test-screenshot"
 
     JWT_SIGNING_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
