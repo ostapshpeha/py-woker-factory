@@ -83,7 +83,9 @@ class TaskModel(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-
+    images: Mapped[list["TaskImageModel"]] = relationship(
+        "TaskImageModel", back_populates="task", cascade="all, delete-orphan"
+    )
     worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"))
     worker: Mapped["WorkerModel"] = relationship("WorkerModel", back_populates="tasks")
 
