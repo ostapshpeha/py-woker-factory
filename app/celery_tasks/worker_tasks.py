@@ -68,7 +68,7 @@ except Exception as e:
         # Виконуємо в контейнері
         output = docker_service.execute_command(container_id, run_cmd, user="kasm-user")
 
-        # 2. ТУТ МАЄ БУТИ ОНОВЛЕННЯ БД (Синхронне)
+        #TODO ТУТ МАЄ БУТИ ОНОВЛЕННЯ БД (Синхронне)
         # db = SessionLocal()
         # update_task_status(db, task_id, "COMPLETED", output)
         # update_worker_status(db, worker_id, "IDLE")
@@ -79,5 +79,5 @@ except Exception as e:
 
     except Exception as e:
         logger.error(f"❌ Task {task_id} failed: {str(e)}")
-        # Оновити статус на FAILED і воркера на IDLE
+        #TODO Оновити статус на FAILED і воркера на IDLE
         return {"status": "error", "error": str(e)}
