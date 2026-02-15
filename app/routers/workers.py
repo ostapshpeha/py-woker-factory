@@ -26,7 +26,7 @@ from app.exceptions.worker import (
     WorkerIsBusyError,
     WorkerOfflineError,
 )
-from app.celery_tasks.worker_tasks import run_oi_agent
+from app.celery_tasks.worker_tasks import run_oi_agent, execute_worker_task
 from app.worker.docker_service import docker_service  # Для зупинки контейнера
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
@@ -71,13 +71,12 @@ async def create_worker_endpoint(
             status=WorkerStatus.IDLE,  # Контейнер піднявся і чекає на задачі
         )
         updated_worker.vnc_password = vnc_password
-        agent_prompt = "Create a file on desktop /home/kasm-user/Desktop with name ai_hello.txt"
 
         run_oi_agent.delay(
             container_id=updated_worker.container_id,
-            prompt=agent_prompt,
             gemini_api_key=settings.GEMINI_API_KEY
         )
+
         return updated_worker
 
     except WorkerLimitExceeded as e:
@@ -135,10 +134,17 @@ async def create_task_for_worker(
 ):
     """Створює задачу для конкретного воркера і відправляє її в Celery."""
     try:
-        task = await crud.create_task(db, task_in, worker_id, current_user.id)
+        # Отримуємо таску і вже готовий container_id одним махом
+        task, container_id = await crud.create_task(db, task_in, worker_id, current_user.id)
 
-        # ТУТ БУДЕ ВИКЛИК CELERY:
-        # run_gemini_agent.delay(task.id, task.prompt, worker.container_id)
+        # Тепер у нас є чистий рядок container_id, ніяких проблем з об'єктами SQLAlchemy
+        execute_worker_task.delay(
+            task_id=task.id,
+            worker_id=worker_id,
+            container_id=container_id,
+            prompt=task.prompt,
+            gemini_api_key=settings.GEMINI_API_KEY
+        )
 
         return task
     except WorkerNotFound as e:

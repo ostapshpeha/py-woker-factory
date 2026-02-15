@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Sequence, Any, Coroutine
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -129,27 +129,31 @@ async def update_worker_docker_info(
 
 async def create_task(
     session: AsyncSession, task_in: TaskCreate, worker_id: int, user_id: int
-) -> TaskModel:
+) -> tuple[TaskModel, str | None]:
     """Creates a new task and blocks the worker for other tasks."""
 
     worker = await get_worker(session, worker_id, user_id)
 
     if worker.status == WorkerStatus.OFFLINE:
-        raise WorkerOfflineError("Worker offline. Turn it on before task creation.")
+        raise WorkerOfflineError("Worker offline.")
     if worker.status == WorkerStatus.BUSY:
         raise WorkerIsBusyError("Worker is busy.")
 
     new_task = TaskModel(
-        prompt=task_in.prompt, worker_id=worker_id, status=TaskStatus.QUEUED
+        prompt=task_in.prompt,
+        worker_id=worker_id,
+        status=TaskStatus.QUEUED
     )
 
     worker.status = WorkerStatus.BUSY
+    # Зберігаємо container_id в змінну ДО комиту, щоб він не "протух"
+    container_id = worker.container_id
 
     session.add(new_task)
     await session.commit()
-    await session.refresh(new_task)
+    await session.refresh(new_task, ["images"])
 
-    return new_task
+    return new_task, container_id
 
 
 async def get_task(session: AsyncSession, task_id: int, user_id: int) -> TaskModel:
