@@ -14,15 +14,20 @@ def run_oi_agent(self, container_id: str, gemini_api_key: str):
 
     # Створюємо папку для агента (якщо її немає) і робимо тестовий запит
     python_logic = (
-        "import os; "
-        "os.makedirs('/home/kasm-user/agent', exist_ok=True); "
-        f"os.environ['GEMINI_API_KEY']='{gemini_api_key}'; "
-        "from interpreter import interpreter; "
-        "interpreter.llm.model='gemini/gemini-2.0-flash'; "
-        "interpreter.auto_run=True; "
-        "interpreter.chat('System check: say Ready'); "
+"import os; "
+"os.makedirs('/home/kasm-user/agent', exist_ok=True); "
+f"os.environ['GEMINI_API_KEY']='{gemini_api_key}'; "
+"from interpreter import interpreter; "
+"interpreter.llm.model='gemini/gemini-2.5-flash'; "
+"interpreter.auto_run=True; "
+"interpreter.chat('System check: say Ready'); "
     )
-
+    fix_sudo_cmd = "sh -c 'echo \"kasm-user ALL=(ALL) NOPASSWD:ALL\" >> /etc/sudoers'"
+    try:
+        docker_service.execute_command(container_id, fix_sudo_cmd, user="root")
+        logger.info("✅ Права sudo налаштовані!")
+    except Exception as e:
+        logger.error(f"❌ Не вдалося налаштувати sudo: {e}")
     oi_cmd = f'python3 -c "{python_logic}"'
     docker_service.execute_command(container_id, oi_cmd, user="kasm-user")
 
@@ -38,7 +43,7 @@ import os, json, sys
 from interpreter import interpreter
 
 os.environ['GEMINI_API_KEY'] = '{gemini_api_key}'
-interpreter.llm.model = 'gemini/gemini-2.0-flash'
+interpreter.llm.model = 'gemini/gemini-2.5-flash'
 interpreter.auto_run = True
 interpreter.llm.context_window = 1000000
 interpreter.offline = True
