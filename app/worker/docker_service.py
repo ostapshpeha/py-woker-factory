@@ -1,3 +1,5 @@
+import os
+
 import docker
 import logging
 from typing import Tuple, Optional
@@ -21,39 +23,36 @@ class DockerService:
         self, worker_name: str, vnc_password: str
     ) -> Tuple[str, int]:
         """
-        Запускає контейнер KasmVNC.
-        Повертає: (container_id, mapped_host_port)
+        Starts the KasmVNC container.
+        Returns: (container_id, mapped_host_port)
         """
         try:
             env_vars = {
-                "VNC_USER": "kasm_user",  # Стандартний юзер для вебу
-                "VNC_PW": "qwerty12345",  # Тимчасовий простий пароль без спецсимволів
+                "VNC_USER": "kasm_user",
+                "VNC_PW": vnc_password,
                 "VNC_VIEW_ONLY": "false",
                 "APP_ARGS": "--no-sandbox",
             }
+            host_absolute_path = "C:/Users/stark/py-woker-factory/agent_code_shared"
+            # base_host_path = os.getenv("HOST_PROJECT_PATH", "/app")
+            # host_volume_path = f"{base_host_path}/agent_code_shared"
+            volumes = {
+                host_absolute_path: {
+                    "bind": "/home/kasm-user/agent",
+                    "mode": "rw"
+                }
+            }
 
-            # Запуск контейнера
-            # Вказуємо тип `Container` для PyCharm, щоб працювало автодоповнення
             container: Container = self.client.containers.run(
                 image="custom-kasm-worker:latest",
                 name=worker_name,
                 detach=True,
-                # ДОВІРЯЄМО ПОРТИ ДОКЕРУ:
-                # Це змусить Docker автоматично вибрати вільний порт (починаючи з 32768+)
                 ports={"6901/tcp": None},
                 environment=env_vars,
                 shm_size="512m",
                 mem_limit="1500m",
                 nano_cpus=1000000000,
-                # ВИПРАВЛЕННЯ ТОМІВ: Використовуємо іменований том, спільний для бази та воркерів
-                # (Його треба буде додати в docker-compose.yml)
-                volumes={
-                    "worker_agent_code_vol": {
-                        "bind": "/home/kasm-user/agent",
-                        "mode": "ro",
-                    }
-                },
-                # Додаємо воркера в спільну мережу, щоб він міг бачити БД або Redis
+                volumes=volumes,
                 network="worker_factory_default",
                 restart_policy={"Name": "on-failure", "MaximumRetryCount": 3},
             )
@@ -98,7 +97,7 @@ class DockerService:
 
     def execute_command(self, container_id: str, command: str, user: str = "kasm-user") -> str:
         """
-        Виконує команду всередині контейнера.
+        Executes a command inside a container.
         """
         try:
             container: Container = self.client.containers.get(container_id)
