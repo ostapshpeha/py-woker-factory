@@ -53,13 +53,13 @@ f"os.environ['GEMINI_API_KEY']='{gemini_api_key}'; "
     return {"status": "initialized"}
 
 
-@celery_app.task(bind=True, name="execute_worker_task", soft_time_limit=300, time_limit=310)
+@celery_app.task(bind=True, name="execute_worker_task", soft_time_limit=500, time_limit=510)
 def execute_worker_task(self, task_id: int, worker_id: int, container_id: str, prompt: str, gemini_api_key: str):
     logger.info(f"▶️ Executing task {task_id} via Base64 Injection")
     status_check = docker_service.execute_command(container_id, "whoami", user="kasm-user")
     logger.info(f"🔍 Container user check: {status_check}")
 
-    # Формуємо Python-скрипт з ін'єкцією скілів та жорсткими правилами системи
+    # Python script injection
     python_script = f"""
 import os, json, sys, glob
 from interpreter import interpreter
@@ -135,7 +135,7 @@ except Exception as e:
 
         if task:
             task.status = TaskStatus.COMPLETED
-            task.result = final_result
+            task.logs = final_result
             task.finished_at = datetime.now(timezone.utc)
         if worker:
             worker.status = WorkerStatus.IDLE

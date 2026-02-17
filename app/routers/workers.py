@@ -9,6 +9,7 @@ from typing import List
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
+from app.core.utils import capture_desktop_screenshot
 from app.db.session import get_db
 from app.models import User
 from app.models.worker import WorkerStatus, WorkerModel, ImageModel
@@ -29,7 +30,6 @@ from app.exceptions.worker import (
 )
 from app.celery_tasks.worker_tasks import run_oi_agent, execute_worker_task
 from app.worker.docker_service import docker_service
-from app.celery_tasks.screenshot_tasks import take_worker_screenshot
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
 
@@ -114,9 +114,8 @@ async def delete_worker_endpoint(
     try:
         worker = await crud.delete_worker(db, worker_id, current_user.id, force)
 
-        # Якщо CRUD успішно видалив запис з БД, вбиваємо фізичний контейнер
-        # if worker.container_id:
-        #     docker_service.stop_worker(worker.container_id)
+        if worker.container_id:
+            docker_service.stop_worker(worker.container_id)
 
         return None
     except WorkerNotFound as e:
@@ -134,12 +133,10 @@ async def create_task_for_worker(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Створює задачу для конкретного воркера і відправляє її в Celery."""
+    """Creates a task for a specific worker and sends it to Celery."""
     try:
-        # Отримуємо таску і вже готовий container_id одним махом
         task, container_id = await crud.create_task(db, task_in, worker_id, current_user.id)
 
-        # Тепер у нас є чистий рядок container_id, ніяких проблем з об'єктами SQLAlchemy
         execute_worker_task.delay(
             task_id=task.id,
             worker_id=worker_id,
@@ -163,7 +160,7 @@ async def get_worker_tasks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Отримує історію завдань конкретного воркера."""
+    """Gets the task history of a particular worker."""
     return await crud.get_task_list(db, worker_id, current_user.id)
 
 
@@ -194,13 +191,23 @@ async def get_worker_screen(
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
+    # countdown 30 secs
     if latest_img:
         time_since_last = (now - latest_img.created_at).total_seconds()
-        if time_since_last >= 30:
-            take_worker_screenshot.delay(worker_id, worker.container_id)
-    else:
-        # Якщо скріншотів ще взагалі немає
-        take_worker_screenshot.delay(worker_id, worker.container_id)
-        raise HTTPException(status_code=404, detail="First screenshot is generating, be patient")
+        if time_since_last < 30:
+            return latest_img
 
-    return latest_img
+    try:
+        # Виконуємо синхронний код Docker у пулі потоків, щоб не "повісити" FastAPI
+        s3_url = await run_in_threadpool(capture_desktop_screenshot, worker.container_id, worker_id)
+
+        new_image = ImageModel(worker_id=worker_id, s3_url=s3_url)
+        session.add(new_image)
+        await session.commit()
+        await session.refresh(new_image)
+
+        return new_image
+
+    except Exception as e:
+        print(f"Error capturing screen: {e}")
+        raise HTTPException(status_code=500, detail="Failed to capture screenshot")

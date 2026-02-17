@@ -105,19 +105,15 @@ async def update_worker_docker_info(
     worker = result.scalars().first()
 
     if worker:
-        # 2. Оновлюємо дані
         worker.container_id = container_id
         worker.vnc_port = vnc_port
         worker.status = status
 
-        # 3. Зберігаємо зміни. УВАГА: commit() скидає всі атрибути об'єкта!
         await session.commit()
 
-    # 4. ФІНАЛЬНИЙ ЗАПИТ: Завантажуємо свіжого воркера РАЗОМ із тасками
-    # Саме цей об'єкт піде в Pydantic, і MissingGreenlet не виникне
     final_query = (
         select(WorkerModel)
-        .options(selectinload(WorkerModel.tasks))  # <--- Ключовий рядок!
+        .options(selectinload(WorkerModel.tasks))
         .where(WorkerModel.id == worker_id)
     )
     final_result = await session.execute(final_query)
@@ -144,12 +140,11 @@ async def create_task(
     )
 
     worker.status = WorkerStatus.BUSY
-    # Зберігаємо container_id в змінну ДО комиту, щоб він не "протух"
     container_id = worker.container_id
 
     session.add(new_task)
     await session.commit()
-    await session.refresh(new_task, ["images"])
+    await session.refresh(new_task)
 
     return new_task, container_id
 
@@ -157,7 +152,6 @@ async def create_task(
 async def get_task(session: AsyncSession, task_id: int, user_id: int) -> TaskModel:
     """Gets the task along with its screenshots, checking user rights."""
 
-    # Використовуємо JOIN з WorkerModel, щоб перевірити, чи належить задача цьому юзеру
     query = (
         select(TaskModel)
         .join(WorkerModel)
