@@ -1,6 +1,8 @@
 import secrets
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 
@@ -9,13 +11,13 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import settings
 from app.db.session import get_db
 from app.models import User
-from app.models.worker import WorkerStatus
+from app.models.worker import WorkerStatus, WorkerModel, ImageModel
 from app.schemas.worker import (
     WorkerCreate,
     WorkerRead,
     TaskListSchema,
     TaskCreate,
-    TaskRead,
+    TaskRead, ImageRead,
 )
 from app.user.dependencies import get_current_user
 from app.worker import crud
@@ -26,7 +28,8 @@ from app.exceptions.worker import (
     WorkerOfflineError,
 )
 from app.celery_tasks.worker_tasks import run_oi_agent, execute_worker_task
-from app.worker.docker_service import docker_service  # Для зупинки контейнера
+from app.worker.docker_service import docker_service
+from app.celery_tasks.screenshot_tasks import take_worker_screenshot
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
 
@@ -162,3 +165,42 @@ async def get_worker_tasks(
 ):
     """Отримує історію завдань конкретного воркера."""
     return await crud.get_task_list(db, worker_id, current_user.id)
+
+
+@router.get("/workers/{worker_id}/screenshot", response_model=ImageRead)
+async def get_worker_screen(
+        worker_id: int,
+        session: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_user),
+):
+    worker_stmt = select(WorkerModel).where(WorkerModel.id == worker_id)
+    worker_res = await session.execute(worker_stmt)
+    worker = worker_res.scalar_one_or_none()
+
+    if not worker or not worker.container_id:
+        raise HTTPException(status_code=404, detail="Worker not found or not active")
+
+    if worker.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    img_stmt = (
+        select(ImageModel)
+        .where(ImageModel.worker_id == worker_id)
+        .order_by(ImageModel.created_at.desc())
+        .limit(1)
+    )
+    img_res = await session.execute(img_stmt)
+    latest_img = img_res.scalar_one_or_none()
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    if latest_img:
+        time_since_last = (now - latest_img.created_at).total_seconds()
+        if time_since_last >= 30:
+            take_worker_screenshot.delay(worker_id, worker.container_id)
+    else:
+        # Якщо скріншотів ще взагалі немає
+        take_worker_screenshot.delay(worker_id, worker.container_id)
+        raise HTTPException(status_code=404, detail="First screenshot is generating, be patient")
+
+    return latest_img
