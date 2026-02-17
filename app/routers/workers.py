@@ -41,14 +41,10 @@ async def create_worker_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        # 1. Створюємо "пустий" запис у БД для перевірки лімітів
-        # На цьому етапі статус воркера має бути STARTING, а порти/id - None
         worker = await crud.create_worker(db, worker_in, current_user.id)
 
         container_name = f"factory_worker_{worker.id}_{current_user.id}"
         vnc_password = secrets.token_hex(8)
-
-        # 3. Запускаємо Docker-контейнер у фоновому потоці
         try:
             container_id, host_port = await run_in_threadpool(
                 docker_service.create_kasm_worker,
@@ -56,21 +52,18 @@ async def create_worker_endpoint(
                 vnc_password=vnc_password,
             )
         except Exception as docker_error:
-            # Якщо Докер впав (немає пам'яті, демон лежить) - прибираємо "сміття" з БД
             await crud.delete_worker(db, worker.id, current_user.id, force=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Не вдалося запустити ізольоване середовище: {str(docker_error)}",
+                detail=f"Failed to start isolated environment: {str(docker_error)}",
             )
 
-        # 4. Зберігаємо отримані дані від Докера в базу
-        # Тобі знадобиться ця функція в crud_worker (див. нижче)
         updated_worker = await crud.update_worker_docker_info(
             session=db,
             worker_id=worker.id,
             container_id=container_id,
             vnc_port=host_port,
-            status=WorkerStatus.IDLE,  # Контейнер піднявся і чекає на задачі
+            status=WorkerStatus.IDLE,
         )
         updated_worker.vnc_password = vnc_password
 
