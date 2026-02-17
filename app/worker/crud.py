@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Sequence, Any, Coroutine
+from typing import Sequence
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +35,7 @@ async def create_worker(
     result = await session.execute(query)
     worker_count = result.scalar()
 
-    if worker_count >= 4:
+    if worker_count >= 3:
         raise WorkerLimitExceeded("Maximum number of workers reached.")
 
     data = worker_in.model_dump()

@@ -1,7 +1,9 @@
 import base64
+import datetime
 import logging
-import sys
+from datetime import datetime, timezone
 from celery.exceptions import SoftTimeLimitExceeded
+from sqlalchemy import null
 
 from app.core.celery_app import celery_app
 from app.db.session import SessionLocal
@@ -60,7 +62,6 @@ def execute_worker_task(self, task_id: int, worker_id: int, container_id: str, p
 
     # Формуємо Python-скрипт з ін'єкцією скілів та жорсткими правилами системи
     python_script = f"""
-print("--- Python script started inside container ---")
 import os, json, sys, glob
 from interpreter import interpreter
 
@@ -73,7 +74,7 @@ skills_dir = '/home/kasm-user/agent/skills'
 
 # 1. БАЗОВІ ПРАВИЛА
 interpreter.system_message += "\\nCRITICAL RULES:\\n"
-interpreter.system_message += "- To install packages, ALWAYS use 'sudo apt-get install -y <package>'. Never forget the '-y' flag.\\n"
+interpreter.system_message += "- You are an expert Ubuntu System Administrator running inside a Dockerized headless environment. Standard rules apply, but avoid commands that require systemd or snap.\\n"
 interpreter.system_message += "- Never wait for user input in terminal. Use non-interactive commands.\\n"
 interpreter.system_message += "- To run GUI apps like Chrome or VS Code, ALWAYS use '--no-sandbox --disable-dev-shm-usage' flags.\\n"
 
@@ -137,7 +138,9 @@ except Exception as e:
 
         if task:
             task.status = TaskStatus.COMPLETED
-            task.result = final_result  # Зберігаємо фінальну відповідь агента
+            task.result = final_result
+            task.logs = output
+            task.finished_at = datetime.now(timezone.utc)
         if worker:
             worker.status = WorkerStatus.IDLE
 
@@ -155,6 +158,8 @@ except Exception as e:
         if task:
             task.status = TaskStatus.FAILED
             task.result = "Error: Task execution exceeded the 5-minute time limit."
+            task.logs = null
+            task.finished_at = datetime.now(timezone.utc)
         if worker:
             worker.status = WorkerStatus.IDLE
 
@@ -171,6 +176,8 @@ except Exception as e:
         if task:
             task.status = TaskStatus.FAILED
             task.result = str(e)
+            task.logs = null
+            task.finished_at = datetime.now(timezone.utc)
         if worker:
             worker.status = WorkerStatus.IDLE
 
