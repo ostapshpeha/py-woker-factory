@@ -1,3 +1,4 @@
+import asyncio
 import io
 import time
 import tarfile
@@ -5,8 +6,9 @@ from io import BytesIO
 from PIL import Image
 from fastapi import UploadFile, HTTPException, status
 
+from app.core.config import settings
+from app.core.s3 import s3_service
 from app.worker.docker_service import docker_service
-from app.core.s3 import s3_client
 
 
 def process_avatar(file: UploadFile) -> bytes:
@@ -50,8 +52,6 @@ def process_avatar(file: UploadFile) -> bytes:
 
 def capture_desktop_screenshot(container_id: str, worker_id: int) -> str:
     tmp_path = "/tmp/screen.png"
-    # S3: results/worker_5/1700000000.png
-    file_name = f"results/worker_{worker_id}/{int(time.time())}.png"
 
     docker_service.execute_command(container_id, f"scrot {tmp_path}", user="kasm-user")
 
@@ -63,8 +63,17 @@ def capture_desktop_screenshot(container_id: str, worker_id: int) -> str:
     member = tar.getmember("screen.png")
     png_bytes = tar.extractfile(member).read()
 
-    s3_url = s3_client.upload_bytes(png_bytes, file_name)
+    object_key = f"results/worker_{worker_id}/{int(time.time())}.png"
+
+    asyncio.run(s3_service.upload_bytes(
+        png_bytes,
+        object_key,
+    ))
+
+    url = asyncio.run(s3_service.generate_presigned_url(
+        object_key,
+    ))
 
     docker_service.execute_command(container_id, f"rm {tmp_path}", user="kasm-user")
 
-    return s3_url
+    return url
