@@ -90,7 +90,7 @@ async def create_worker_endpoint(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
-@router.get("/", response_model=WorkerStatusRead)
+@router.get("/", response_model=List[WorkerStatusRead])
 async def get_workers_endpoint(
     db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
