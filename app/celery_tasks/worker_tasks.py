@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(bind=True, name="run_oi_agent")
 def run_oi_agent(self, container_id: str, gemini_api_key: str):
+    """
+    Attention frontend: user need to wait 3-4 minutes while ubuntu installing
+    apps for new computer
+    :param self:
+    :param container_id:
+    :param gemini_api_key:
+    :return:
+    """
     logger.info(f"⚙️ Initialization container {container_id}")
 
     # 1. Даємо права sudo (від root)
