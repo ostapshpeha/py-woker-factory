@@ -31,7 +31,6 @@ from app.schemas.user import (
     UserProfileResponse,
     UserProfileCreate,
     ActivationResponse,
-    ActivationRequest,
     PasswordResetResponse,
     PasswordChangeSchema,
     PasswordResetConfirmSchema,
@@ -45,11 +44,33 @@ from app.user.security import (
 )
 from app.core.config import settings
 from app.db.session import get_db
-from app.core.utils import process_avatar
 from app.user.validators import validate_passwords_different
 
 router = APIRouter(prefix="/user", tags=["User"])
 s3_service = S3Service()
+
+_RESET_AMBIGUOUS_MSG = "If the email exists, a password reset link has been sent"
+
+
+async def _validate_token_not_expired(
+    token_obj,
+    session: AsyncSession,
+    error_detail: str,
+    status_code: int = status.HTTP_400_BAD_REQUEST,
+) -> None:
+    if token_obj.expires_at < datetime.now(timezone.utc):
+        await session.delete(token_obj)
+        await session.commit()
+        raise HTTPException(status_code=status_code, detail=error_detail)
+
+
+async def _build_profile_response(profile: UserProfileModel) -> UserProfileResponse:
+    avatar_url = None
+    if profile.avatar:
+        avatar_url = await s3_service.generate_presigned_url(profile.avatar)
+    response = UserProfileResponse.model_validate(profile)
+    response.avatar_url = avatar_url
+    return response
 
 
 @router.post(
@@ -60,20 +81,13 @@ s3_service = S3Service()
     description="Register a new user. User must activate account via activation token.",
 )
 async def register(user_data: UserCreate, session: AsyncSession = Depends(get_db)):
-    """
-    Register new user
-    """
     result = await session.execute(select(User).where(User.email == user_data.email))
-    existing_user = result.scalar_one_or_none()
-
-    if existing_user:
+    if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
-    new_user = User(
-        email=str(user_data.email),
-    )
+    new_user = User(email=str(user_data.email))
     new_user.password = user_data.password
 
     activation_token_value = generate_secure_token()
@@ -88,9 +102,6 @@ async def register(user_data: UserCreate, session: AsyncSession = Depends(get_db
     await session.commit()
     await session.refresh(new_user)
 
-    activation_link = (
-        f"http://localhost:8000/api/v1/user/activate?token={activation_token_value}"
-    )
     return UserRegistrationResponseSchema(
         id=new_user.id,
         email=new_user.email,
@@ -106,9 +117,6 @@ async def register(user_data: UserCreate, session: AsyncSession = Depends(get_db
     description="Login and receive access token. Refresh token is issued together.",
 )
 async def login(credentials: LoginRequest, session: AsyncSession = Depends(get_db)):
-    """
-    User login
-    """
     result = await session.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
 
@@ -126,14 +134,11 @@ async def login(credentials: LoginRequest, session: AsyncSession = Depends(get_d
 
     access_token = create_access_token(user_id=user.id)
     refresh_token_value = generate_secure_token()
-    refresh_expires_at = datetime.now(timezone.utc) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
-
     refresh_token = RefreshTokenModel(
         user_id=user.id,
         token=refresh_token_value,
-        expires_at=refresh_expires_at,
+        expires_at=datetime.now(timezone.utc)
+        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
 
     session.add(refresh_token)
@@ -152,14 +157,11 @@ async def login(credentials: LoginRequest, session: AsyncSession = Depends(get_d
     description="Get information about currently authenticated user",
 )
 async def get_me(current_user: User = Depends(get_current_user)):
-    """
-    Get info about current user
-    """
     return current_user
 
 
 @router.get(
-    "/activate",  # Змінено на GET
+    "/activate",
     response_model=ActivationResponse,
     status_code=status.HTTP_200_OK,
     summary="Activate user account",
@@ -169,15 +171,11 @@ async def activate_user(
     token: str = Query(..., description="The activation token sent via email"),
     session: AsyncSession = Depends(get_db),
 ):
-    """
-    Activate user account via GET request.
-    """
     result = await session.execute(
         select(ActivationTokenModel)
         .where(ActivationTokenModel.token == token)
         .options(selectinload(ActivationTokenModel.user))
     )
-
     activation_token = result.scalar_one_or_none()
 
     if activation_token is None:
@@ -186,13 +184,9 @@ async def activate_user(
             detail="Invalid activation token",
         )
 
-    if activation_token.expires_at < datetime.now(timezone.utc):
-        await session.delete(activation_token)
-        await session.commit()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Activation token has expired",
-        )
+    await _validate_token_not_expired(
+        activation_token, session, "Activation token has expired"
+    )
 
     user = activation_token.user
 
@@ -219,7 +213,6 @@ async def refresh_access_token(
     data: TokenRefreshRequestSchema,
     session: AsyncSession = Depends(get_db),
 ):
-
     result = await session.execute(
         select(RefreshTokenModel)
         .where(RefreshTokenModel.token == data.refresh_token)
@@ -233,14 +226,12 @@ async def refresh_access_token(
             detail="Invalid refresh token",
         )
 
-    if refresh_token.expires_at < datetime.now(timezone.utc):
-        await session.delete(refresh_token)
-        await session.commit()
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token expired",
-        )
+    await _validate_token_not_expired(
+        refresh_token,
+        session,
+        "Refresh token expired",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
 
     user = refresh_token.user
 
@@ -253,27 +244,21 @@ async def refresh_access_token(
     await session.delete(refresh_token)
 
     new_refresh_value = generate_secure_token()
-    new_refresh_expires_at = datetime.now(timezone.utc) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
-
     new_refresh = RefreshTokenModel(
         user_id=user.id,
         token=new_refresh_value,
-        expires_at=new_refresh_expires_at,
+        expires_at=datetime.now(timezone.utc)
+        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
-
     session.add(new_refresh)
 
     new_access_token = create_access_token(user_id=user.id)
-
     await session.commit()
 
-    return {
-        "access_token": new_access_token,
-        "refresh_token": new_refresh_value,
-        "token_type": "bearer",
-    }
+    return TokenLoginResponseSchema(
+        access_token=new_access_token,
+        refresh_token=new_refresh_value,
+    )
 
 
 @router.post(
@@ -303,24 +288,11 @@ async def request_password_reset(
     data: PasswordResetRequestSchema,
     session: AsyncSession = Depends(get_db),
 ):
-    """
-    Request password reset.
-
-    Sends reset token to user's email if account exists.
-    Returns success even if email not found (security best practice).
-    """
     result = await session.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
-    if not user:
-        return PasswordResetResponse(
-            detail="If the email exists, a password reset link has been sent"
-        )
-
-    if not user.is_active:
-        return PasswordResetResponse(
-            detail="If the email exists, a password reset link has been sent"
-        )
+    if not user or not user.is_active:
+        return PasswordResetResponse(detail=_RESET_AMBIGUOUS_MSG)
 
     await session.execute(
         delete(PasswordResetTokenModel).where(
@@ -332,15 +304,13 @@ async def request_password_reset(
     reset_token = PasswordResetTokenModel(
         user_id=user.id,
         token=reset_token_value,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),  # 1 hour expiry
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
     )
 
     session.add(reset_token)
     await session.commit()
 
-    return PasswordResetResponse(
-        detail=f"Your reset token - {reset_token}",
-    )
+    return PasswordResetResponse(detail=f"Your reset token - {reset_token_value}")
 
 
 @router.post(
@@ -354,12 +324,6 @@ async def confirm_password_reset(
     data: PasswordResetConfirmSchema,
     session: AsyncSession = Depends(get_db),
 ):
-    """
-    Confirm password reset.
-
-    Validates reset token and sets new password.
-    Token is deleted after successful reset.
-    """
     result = await session.execute(
         select(PasswordResetTokenModel)
         .where(PasswordResetTokenModel.token == data.token)
@@ -373,25 +337,15 @@ async def confirm_password_reset(
             detail="Invalid or expired reset token",
         )
 
-    if reset_token.expires_at < datetime.now(timezone.utc):
-        await session.delete(reset_token)
-        await session.commit()
-
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Reset token has expired",
-        )
+    await _validate_token_not_expired(reset_token, session, "Reset token has expired")
 
     user = reset_token.user
-
     user.password = data.new_password
 
     await session.delete(reset_token)
-
     await session.execute(
         delete(RefreshTokenModel).where(RefreshTokenModel.user_id == user.id)
     )
-
     await session.commit()
 
     return PasswordResetResponse(detail="Password successfully reset")
@@ -409,15 +363,6 @@ async def change_password(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    """
-    Change password for authenticated user.
-
-    Requirements:
-    - Current password must be correct
-    - New password must meet complexity requirements
-    - New password must be different from current password
-    - Invalidates all refresh tokens after successful change
-    """
     if not current_user.verify_password(data.current_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -441,7 +386,6 @@ async def change_password(
     await session.execute(
         delete(RefreshTokenModel).where(RefreshTokenModel.user_id == current_user.id)
     )
-
     await session.commit()
 
     return PasswordResetResponse(detail="Password successfully changed")
@@ -455,24 +399,24 @@ async def change_password(
 async def create_user_profile(
     profile_data: UserProfileCreate,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db),
 ):
-    existing_profile = await db.execute(
+    existing = await session.execute(
         select(UserProfileModel).where(UserProfileModel.user_id == user.id)
     )
-    if existing_profile.scalar_one_or_none():
+    if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Profile already exists"
         )
 
     new_profile = UserProfileModel(user_id=user.id, **profile_data.model_dump())
-    db.add(new_profile)
+    session.add(new_profile)
 
     try:
-        await db.commit()
-        await db.refresh(new_profile)
+        await session.commit()
+        await session.refresh(new_profile)
     except IntegrityError:
-        await db.rollback()
+        await session.rollback()
         raise HTTPException(status_code=400, detail="Error creating profile")
 
     return new_profile
@@ -482,41 +426,18 @@ async def create_user_profile(
 async def get_my_profile(profile: UserProfileModel = Depends(get_current_user_profile)):
     if not profile:
         raise HTTPException(
-            status_code=status.HTTP_204_NO_CONTENT,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found. Please create one first.",
         )
-
-    avatar_url = None
-    if profile.avatar:
-        avatar_url = await s3_service.generate_presigned_url(profile.avatar)
-
-    response = UserProfileResponse.model_validate(profile)
-    response.avatar_url = avatar_url
-
-    return response
+    return await _build_profile_response(profile)
 
 
 @router.patch("/profile", response_model=UserProfileResponse)
 async def update_my_profile(
     profile_data: UserProfileUpdate,
     profile: UserProfileModel = Depends(get_current_user_profile),
-    db: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db),
 ):
-    """
-    Partially update user profile.
-
-    Only provided fields will be updated. Null/None values are ignored.
-    This endpoint supports partial updates - you can update one or more fields
-    without affecting others.
-
-    Updatable fields:
-    - first_name
-    - last_name
-    - date_of_birth
-    - info
-
-    Note: Avatar updates should use the dedicated /profile/avatar endpoint.
-    """
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -534,48 +455,7 @@ async def update_my_profile(
     for field, value in update_data.items():
         setattr(profile, field, value)
 
-    await db.commit()
-    await db.refresh(profile)
+    await session.commit()
+    await session.refresh(profile)
 
-    avatar_url = None
-    if profile.avatar:
-        avatar_url = await s3_service.generate_presigned_url(profile.avatar)
-
-    response = UserProfileResponse.model_validate(profile)
-    response.avatar_url = avatar_url
-
-    return response
-
-
-# @router.patch("/profile/avatar")
-# async def update_avatar(
-#     file: UploadFile = File(...),
-#     user: User = Depends(get_current_user),
-#     profile: UserProfileModel = Depends(get_current_user_profile),
-#     db: AsyncSession = Depends(get_db),
-# ):
-#     """
-#     Downloads avatar, deletes old one from S3, updates DB.
-#     If there is no profile, it throws an error (the user must first create a profile).
-#     """
-#     if not profile:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail="Profile not found. Create profile before uploading avatar.",
-#         )
-#
-#     processed_image = process_avatar(file)
-#
-#     s3_key = f"profiles/{user.id}/{uuid.uuid4()}.webp"
-#
-#     if profile.avatar:
-#         await s3_service.delete_file(profile.avatar)
-#
-#     await s3_service.upload_file(processed_image, s3_key, "image/webp")
-#
-#     profile.avatar = s3_key
-#     await db.commit()
-#
-#     new_avatar_url = await s3_service.generate_presigned_url(s3_key)
-#
-#     return {"message": "Avatar updated", "avatar_url": new_avatar_url}
+    return await _build_profile_response(profile)
