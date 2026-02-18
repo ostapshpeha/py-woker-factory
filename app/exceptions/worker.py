@@ -20,3 +20,15 @@ class WorkerOfflineError(Exception):
 
 class TaskIsProcessingError(Exception):
     pass
+
+
+class WorkerNoContainerError(Exception):
+    pass
+
+
+class DockerOperationError(Exception):
+    pass
+
+
+class ContainerNotFoundError(Exception):
+    pass
