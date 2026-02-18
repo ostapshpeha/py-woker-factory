@@ -1,18 +1,14 @@
 import secrets
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 from typing import List
 
-from starlette.concurrency import run_in_threadpool
-
 from app.core.config import settings
-from app.core.utils import capture_desktop_screenshot
 from app.db.session import get_db
 from app.models import User
-from app.models.worker import WorkerStatus, WorkerModel, ImageModel
+from app.models.worker import WorkerStatus
 from app.schemas.worker import (
     WorkerCreate,
     TaskListSchema,
@@ -29,10 +25,12 @@ from app.exceptions.worker import (
     WorkerNotFound,
     WorkerIsBusyError,
     WorkerOfflineError,
+    WorkerNoContainerError,
+    DockerOperationError,
+    ContainerNotFoundError,
 )
 from app.celery_tasks.worker_tasks import run_oi_agent, execute_worker_task
-from app.worker.docker_service import docker_service
-from app.worker.crud import stop_worker_container, start_worker_container
+from app.worker.docker_service import get_docker_service
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
 
@@ -59,7 +57,7 @@ async def create_worker_endpoint(
         vnc_password = secrets.token_hex(8)
         try:
             container_id, host_port = await run_in_threadpool(
-                docker_service.create_kasm_worker,
+                get_docker_service().create_kasm_worker,
                 worker_name=container_name,
                 vnc_password=vnc_password,
             )
@@ -90,7 +88,7 @@ async def create_worker_endpoint(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
-@router.get("/", response_model=WorkerStatusRead)
+@router.get("/", response_model=List[WorkerStatusRead])
 async def get_workers_endpoint(
     db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
@@ -120,7 +118,7 @@ async def delete_worker_endpoint(
         worker = await crud.delete_worker(db, worker_id, current_user.id, force)
 
         if worker.container_id:
-            docker_service.stop_worker(worker.container_id)
+            get_docker_service().stop_worker(worker.container_id)
 
         return None
     except WorkerNotFound as e:
@@ -159,9 +157,10 @@ async def create_task_for_worker(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.get("/{worker_id}/tasks",
-            response_model=List[TaskListSchema],
-            summary="Gets task history"
+@router.get(
+    "/{worker_id}/tasks",
+    response_model=List[TaskListSchema],
+    summary="Gets task history"
 )
 async def get_worker_tasks(
     worker_id: int,
@@ -173,55 +172,23 @@ async def get_worker_tasks(
 
 
 @router.get(
-    "/workers/{worker_id}/screenshot",
+    "/{worker_id}/screenshot",
     response_model=ImageRead,
     summary="Get a screenshot of VirtualMachine",
 )
 async def get_worker_screen(
-        worker_id: int,
-        session: AsyncSession = Depends(get_db),
-        current_user: User = Depends(get_current_user),
+    worker_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    worker_stmt = select(WorkerModel).where(WorkerModel.id == worker_id)
-    worker_res = await session.execute(worker_stmt)
-    worker = worker_res.scalar_one_or_none()
-
-    if not worker or not worker.container_id:
-        raise HTTPException(status_code=404, detail="Worker not found or not active")
-
-    if worker.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Permission denied")
-
-    img_stmt = (
-        select(ImageModel)
-        .where(ImageModel.worker_id == worker_id)
-        .order_by(ImageModel.created_at.desc())
-        .limit(1)
-    )
-    img_res = await session.execute(img_stmt)
-    latest_img = img_res.scalar_one_or_none()
-
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-    # countdown 30 secs
-    if latest_img:
-        time_since_last = (now - latest_img.created_at).total_seconds()
-        if time_since_last < 30:
-            return latest_img
-
     try:
-        s3_url = await run_in_threadpool(capture_desktop_screenshot, worker.container_id, worker_id)
-
-        new_image = ImageModel(worker_id=worker_id, s3_url=s3_url)
-        session.add(new_image)
-        await session.commit()
-        await session.refresh(new_image)
-
-        return new_image
-
+        return await crud.get_or_capture_screenshot(db, worker_id, current_user.id)
+    except WorkerNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except WorkerNoContainerError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
-        print(f"Error capturing screen: {e}")
-        raise HTTPException(status_code=500, detail="Failed to capture screenshot")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to capture screenshot")
 
 
 @router.post(
@@ -236,11 +203,19 @@ async def get_worker_screen(
 async def stop_worker_endpoint(
     worker_id: int,
     force: bool = Query(False, description="Force kill the container even if it is running a task (BUSY)"),
-    session: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    worker = await stop_worker_container(session, worker_id, current_user.id, force)
-    return worker
+    try:
+        return await crud.stop_worker_container(db, worker_id, current_user.id, force)
+    except WorkerNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except WorkerNoContainerError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except WorkerIsBusyError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except DockerOperationError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @router.post(
@@ -251,37 +226,29 @@ async def stop_worker_endpoint(
 )
 async def start_worker_endpoint(
     worker_id: int,
-    session: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    worker = await start_worker_container(session, worker_id, current_user.id)
-    return worker
+    try:
+        return await crud.start_worker_container(db, worker_id, current_user.id)
+    except WorkerNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except WorkerNoContainerError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ContainerNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DockerOperationError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @router.get("/{worker_id}/screenshots", response_model=List[ImageRead])
 async def get_worker_screenshots(
     worker_id: int,
-    session: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """
-    Get a complete list of screenshots for a specific worker.
-    Results are sorted from newest to oldest.
-    """
-    worker_stmt = select(WorkerModel).where(
-        WorkerModel.id == worker_id,
-        WorkerModel.user_id == current_user.id
-    )
-    worker_res = await session.execute(worker_stmt)
-    if not worker_res.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Worker not found or access denied")
-
-    img_stmt = (
-        select(ImageModel)
-        .where(ImageModel.worker_id == worker_id)
-        .order_by(ImageModel.created_at.desc())
-    )
-    img_res = await session.execute(img_stmt)
-    screenshots = img_res.scalars().all()
-
-    return screenshots
+    """Get a complete list of screenshots for a specific worker, newest first."""
+    try:
+        return await crud.get_screenshot_list(db, worker_id, current_user.id)
+    except WorkerNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

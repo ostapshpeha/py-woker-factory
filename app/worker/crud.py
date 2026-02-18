@@ -2,17 +2,20 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 import docker
-from fastapi import HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
+from app.core.utils import capture_desktop_screenshot
 from app.exceptions.worker import (
     WorkerLimitExceeded,
     WorkerNotFound,
     WorkerIsBusyError,
     WorkerOfflineError,
+    WorkerNoContainerError,
+    DockerOperationError,
+    ContainerNotFoundError,
     TaskNotFound,
     TaskIsProcessingError,
 )
@@ -21,9 +24,13 @@ from app.models.worker import (
     WorkerStatus,
     TaskModel,
     TaskStatus,
+    ImageModel,
 )
 from app.schemas.worker import WorkerCreate, TaskCreate
-from app.worker.docker_service import docker_service
+from app.worker.docker_service import get_docker_service
+
+
+# ── Worker CRUD ──────────────────────────────────────────────
 
 
 async def create_worker(
@@ -125,6 +132,9 @@ async def update_worker_docker_info(
     return final_result.scalars().first()
 
 
+# ── Task CRUD ────────────────────────────────────────────────
+
+
 async def create_task(
     session: AsyncSession, task_in: TaskCreate, worker_id: int, user_id: int
 ) -> tuple[TaskModel, str | None]:
@@ -200,41 +210,30 @@ async def delete_task(session: AsyncSession, task_id: int, user_id: int) -> Task
     return task
 
 
+# ── Container lifecycle ──────────────────────────────────────
+
+
 async def stop_worker_container(
         session: AsyncSession, worker_id: int, user_id: int, force: bool = False
 ) -> WorkerModel:
-    """
-    Stops the worker container. Checks BUSY status and access rights.
-    """
-    # 1. Знаходимо воркера
-    stmt = (
-        select(WorkerModel)
-        .options(selectinload(WorkerModel.tasks))
-        .where(WorkerModel.id == worker_id, WorkerModel.user_id == user_id))
+    """Stops the worker container. Checks BUSY status and access rights."""
 
-    result = await session.execute(stmt)
-    worker = result.scalar_one_or_none()
-
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found or access denied")
+    worker = await get_worker(session, worker_id, user_id)
 
     if not worker.container_id:
-        raise HTTPException(status_code=400, detail="The worker has no bound container")
+        raise WorkerNoContainerError("The worker has no bound container.")
 
     if worker.status == WorkerStatus.OFFLINE:
         return worker
 
-
     if worker.status == WorkerStatus.BUSY and not force:
-        raise HTTPException(
-            status_code=400,
-            detail="The worker is currently performing a task. Use force=true to force stop."
+        raise WorkerIsBusyError(
+            "The worker is currently performing a task. Use force=true to force stop."
         )
 
-    # 3. Docker SDK call in the thread pool (because stop() can take up to 10 seconds)
     try:
         def _docker_stop():
-            container = docker_service.client.containers.get(worker.container_id)
+            container = get_docker_service().client.containers.get(worker.container_id)
             if force:
                 container.kill()
             else:
@@ -244,7 +243,7 @@ async def stop_worker_container(
     except docker.errors.NotFound:
         pass
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
+        raise DockerOperationError(f"Docker error: {str(e)}")
 
     worker.status = WorkerStatus.OFFLINE
     await session.commit()
@@ -256,38 +255,84 @@ async def stop_worker_container(
 async def start_worker_container(
         session: AsyncSession, worker_id: int, user_id: int
 ) -> WorkerModel:
-    """
-    Starts a previously stopped worker container.
-    """
-    stmt = (
-        select(WorkerModel)
-        .options(selectinload(WorkerModel.tasks))
-        .where(WorkerModel.id == worker_id, WorkerModel.user_id == user_id))
-    result = await session.execute(stmt)
-    worker = result.scalar_one_or_none()
+    """Starts a previously stopped worker container."""
 
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found or access denied")
+    worker = await get_worker(session, worker_id, user_id)
 
     if not worker.container_id:
-        raise HTTPException(status_code=400, detail="The worker has no bound container to run")
+        raise WorkerNoContainerError("The worker has no bound container to run.")
 
     if worker.status in [WorkerStatus.IDLE, WorkerStatus.BUSY]:
         return worker
 
     try:
         def _docker_start():
-            container = docker_service.client.containers.get(worker.container_id)
+            container = get_docker_service().client.containers.get(worker.container_id)
             container.start()
 
         await run_in_threadpool(_docker_start)
     except docker.errors.NotFound:
-        raise HTTPException(status_code=404, detail="The container was not found on the server. It may have been deleted.")
+        raise ContainerNotFoundError("The container was not found on the server. It may have been deleted.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Docker error: {str(e)}")
+        raise DockerOperationError(f"Docker error: {str(e)}")
 
     worker.status = WorkerStatus.IDLE
     await session.commit()
     await session.refresh(worker)
 
     return worker
+
+
+# ── Screenshot CRUD ──────────────────────────────────────────
+
+
+async def get_or_capture_screenshot(
+    session: AsyncSession, worker_id: int, user_id: int
+) -> ImageModel:
+    """Gets latest screenshot (if <30s old) or captures a new one."""
+
+    worker = await get_worker(session, worker_id, user_id)
+
+    if not worker.container_id:
+        raise WorkerNoContainerError("Worker not found or not active.")
+
+    img_stmt = (
+        select(ImageModel)
+        .where(ImageModel.worker_id == worker_id)
+        .order_by(ImageModel.created_at.desc())
+        .limit(1)
+    )
+    img_res = await session.execute(img_stmt)
+    latest_img = img_res.scalar_one_or_none()
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    if latest_img:
+        time_since_last = (now - latest_img.created_at).total_seconds()
+        if time_since_last < 30:
+            return latest_img
+
+    s3_url = await run_in_threadpool(capture_desktop_screenshot, worker.container_id, worker_id)
+
+    new_image = ImageModel(worker_id=worker_id, s3_url=s3_url)
+    session.add(new_image)
+    await session.commit()
+    await session.refresh(new_image)
+
+    return new_image
+
+
+async def get_screenshot_list(
+    session: AsyncSession, worker_id: int, user_id: int
+) -> Sequence[ImageModel]:
+    """Returns all screenshots for a worker, newest first."""
+
+    await get_worker(session, worker_id, user_id)
+
+    img_stmt = (
+        select(ImageModel)
+        .where(ImageModel.worker_id == worker_id)
+        .order_by(ImageModel.created_at.desc())
+    )
+    img_res = await session.execute(img_stmt)
+    return img_res.scalars().all()
