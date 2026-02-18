@@ -26,22 +26,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def get_password_hash(password: str) -> str:
-    """
-    Hash a plain-text password using the configured password context.
-
-    This function takes a plain-text password and returns its bcrypt hash.
-    The bcrypt algorithm is used with a specified number of rounds for enhanced security.
-
-    Args:
-        password (str): The plain-text password to hash.
-
-    Returns:
-        str: The resulting hashed password.
-    """
-    return pwd_context.hash(password)
-
-
 def create_access_token(user_id: int) -> str:
     """
     Create a new access token with a default or specified expiration time.
