@@ -6,9 +6,11 @@ interface SidebarProps {
   selectedWorker: Worker | null
   isOpen: boolean
   onSelectWorker: (worker: Worker) => void
+  onToggleWorker?: (id: string) => void
+  onDeleteWorker?: (id: string) => void
 }
 
-export function Sidebar({ workers, selectedWorker, isOpen, onSelectWorker }: SidebarProps) {
+export function Sidebar({ workers, selectedWorker, isOpen, onSelectWorker, onToggleWorker, onDeleteWorker }: SidebarProps) {
   const activeCount = workers.filter(w => w.status !== 'OFFLINE').length
 
   return (
@@ -50,6 +52,8 @@ export function Sidebar({ workers, selectedWorker, isOpen, onSelectWorker }: Sid
                 worker={worker}
                 isSelected={selectedWorker?.id === worker.id}
                 onClick={() => onSelectWorker(worker)}
+                onToggle={onToggleWorker ? () => onToggleWorker(worker.id) : undefined}
+                onDelete={onDeleteWorker ? () => onDeleteWorker(worker.id) : undefined}
               />
             ))}
           </div>

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { DashboardLayout } from './components/layout/DashboardLayout'
 import { TaskHistoryPage } from './pages/TaskHistoryPage'
 import { ScreenshotGalleryPage } from './pages/ScreenshotGalleryPage'
+import { WorkerDetailPage } from './pages/WorkerDetailPage'
 import { ProfilePage } from './pages/ProfilePage'
 
 export default function App() {
@@ -9,6 +10,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/"                               element={<DashboardLayout />} />
+        <Route path="/workers/:workerId"              element={<WorkerDetailPage />} />
         <Route path="/workers/:workerId/tasks"        element={<TaskHistoryPage />} />
         <Route path="/workers/:workerId/screenshots"  element={<ScreenshotGalleryPage />} />
         <Route path="/profile"                        element={<ProfilePage />} />

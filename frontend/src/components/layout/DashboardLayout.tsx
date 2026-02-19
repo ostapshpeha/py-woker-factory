@@ -10,11 +10,30 @@ import { TaskInputPanel } from './TaskInputPanel'
 export function DashboardLayout() {
   const [sidebarOpen,  setSidebarOpen]  = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
+  const [workers, setWorkers] = useState<Worker[]>(mockWorkers)
   const [selectedWorker, setSelectedWorker] = useState<Worker | null>(mockWorkers[0])
 
   const toggleSidebar  = useCallback(() => setSidebarOpen(prev => !prev), [])
   const closeSidebar   = useCallback(() => setSidebarOpen(false), [])
   const toggleLogPanel = useCallback(() => setLogPanelOpen(prev => !prev), [])
+
+  const handleToggleWorker = useCallback((id: string) => {
+    setWorkers(prev => prev.map(w =>
+      w.id === id
+        ? { ...w, status: w.status === 'OFFLINE' ? 'IDLE' : 'OFFLINE' }
+        : w
+    ))
+    setSelectedWorker(prev =>
+      prev?.id === id
+        ? { ...prev, status: prev.status === 'OFFLINE' ? 'IDLE' : 'OFFLINE' }
+        : prev
+    )
+  }, [])
+
+  const handleDeleteWorker = useCallback((id: string) => {
+    setWorkers(prev => prev.filter(w => w.id !== id))
+    setSelectedWorker(prev => (prev?.id === id ? null : prev))
+  }, [])
 
   const handleSelectWorker = useCallback((worker: Worker) => {
     setSelectedWorker(worker)
@@ -25,10 +44,15 @@ export function DashboardLayout() {
     ? mockLogLines.filter(l => selectedWorker.status === 'BUSY' || l.type === 'system')
     : []
 
+  // Keep selectedWorker in sync with workers state
+  const syncedSelected = selectedWorker
+    ? (workers.find(w => w.id === selectedWorker.id) ?? null)
+    : null
+
   return (
     <div className="flex flex-col h-screen bg-abyss overflow-hidden">
       <TopBar
-        workers={mockWorkers}
+        workers={workers}
         sidebarOpen={sidebarOpen}
         logPanelOpen={logPanelOpen}
         onMenuToggle={toggleSidebar}
@@ -52,10 +76,12 @@ export function DashboardLayout() {
         />
 
         <Sidebar
-          workers={mockWorkers}
-          selectedWorker={selectedWorker}
+          workers={workers}
+          selectedWorker={syncedSelected}
           isOpen={sidebarOpen}
           onSelectWorker={handleSelectWorker}
+          onToggleWorker={handleToggleWorker}
+          onDeleteWorker={handleDeleteWorker}
         />
 
         {/* ── Main content column ── */}
@@ -65,33 +91,33 @@ export function DashboardLayout() {
           <div className="flex items-center justify-between px-5 py-2.5 bg-surface/30 border-b border-border shrink-0">
             <div className="flex items-center gap-2">
               <span className="label-ops">Live View</span>
-              {selectedWorker && (
+              {syncedSelected && (
                 <>
                   <span className="text-slate-700 font-mono text-[10px]">/</span>
                   <span className="font-mono text-[11px] text-slate-300 font-medium">
-                    {selectedWorker.name}
+                    {syncedSelected.name}
                   </span>
                 </>
               )}
             </div>
 
-            {selectedWorker && (
+            {syncedSelected && (
               <div className="flex items-center gap-3">
                 <span className="font-mono text-[10px] text-slate-700 hidden sm:block">
-                  vnc :{selectedWorker.port}
+                  vnc :{syncedSelected.port}
                 </span>
               </div>
             )}
           </div>
 
           {/* ── Scrollable canvas ── */}
-          {selectedWorker ? (
+          {syncedSelected ? (
             <div className="flex-1 overflow-y-auto">
               {/* Grid background only behind the content, not the full panel */}
               <div className="grid-bg min-h-full">
                 <div className="p-5 flex flex-col gap-4">
-                  <LiveViewBezel worker={selectedWorker} />
-                  <TaskInputPanel worker={selectedWorker} />
+                  <LiveViewBezel worker={syncedSelected} />
+                  <TaskInputPanel worker={syncedSelected} />
                 </div>
               </div>
             </div>
@@ -110,7 +136,7 @@ export function DashboardLayout() {
         <div className={`shrink-0 hidden ${logPanelOpen ? 'sm:flex' : ''} xl:flex`}>
           <LogPanel
             lines={visibleLogs}
-            workerName={selectedWorker?.name}
+            workerName={syncedSelected?.name}
           />
         </div>
 
