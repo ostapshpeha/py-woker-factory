@@ -1,26 +1,21 @@
+import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { PageLayout } from '../components/layout/PageLayout'
 import { mockWorkers, mockTasks, mockScreenshots } from '../data/mockData'
+import { useAuth } from '../context/AuthContext'
 
 function maskToken(token: string): string {
   return token.slice(0, 6) + '••••••••••••••••' + token.slice(-4)
 }
 
-const MOCK_USER = {
-  id:          'usr_op7f3a',
-  username:    'operator',
-  email:       'operator@worker-factory.ai',
-  role:        'Operator',
-  joinedAt:    '2026-02-01',
-  accessToken: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c3Jfb3A3ZjNhIn0.abcdef',
-  accessExp:   '1h 47m',
-  refreshExp:  '6d 22h',
-}
-
 export function ProfilePage() {
+  const { user, logout, changePassword } = useAuth()
+
   const totalTasks       = mockTasks.length
   const totalScreenshots = mockScreenshots.length
   const activeWorkers    = mockWorkers.filter(w => w.status !== 'OFFLINE').length
+
+  const accessToken = localStorage.getItem('access_token') ?? ''
 
   return (
     <PageLayout>
@@ -42,34 +37,34 @@ export function ProfilePage() {
 
           {/* Identity block */}
           <div className="border border-border bg-surface/30 p-5 flex items-start gap-4">
-            {/* Avatar placeholder */}
             <div className="w-12 h-12 border border-border-bright bg-void flex items-center justify-center shrink-0">
               <span className="font-mono text-lg text-slate-600">◆</span>
             </div>
             <div>
-              <p className="font-mono text-sm font-semibold text-slate-100">{MOCK_USER.username}</p>
-              <p className="font-mono text-[11px] text-slate-500">{MOCK_USER.email}</p>
-              <p className="font-mono text-[10px] text-slate-700 mt-0.5">{MOCK_USER.id}</p>
+              <p className="font-mono text-sm font-semibold text-slate-100">
+                {user?.email.split('@')[0] ?? '—'}
+              </p>
+              <p className="font-mono text-[11px] text-slate-500">{user?.email ?? '—'}</p>
+              <p className="font-mono text-[10px] text-slate-700 mt-0.5">id:{user?.id ?? '—'}</p>
             </div>
           </div>
 
           {/* Account details */}
           <Section title="Account">
-            <Row label="Role"   value={MOCK_USER.role} />
-            <Row label="Joined" value={MOCK_USER.joinedAt} />
-            <Row label="Email"  value={MOCK_USER.email} />
+            <Row label="Email"  value={user?.email ?? '—'} />
+            <Row label="Active" value={user?.is_active ? 'Yes' : 'No'} />
           </Section>
 
           {/* Session / tokens */}
-          <Section title="Session">
-            <Row
-              label="Access token"
-              value={maskToken(MOCK_USER.accessToken)}
-              mono dim
-            />
-            <Row label="Access expires"  value={`in ${MOCK_USER.accessExp}`} />
-            <Row label="Refresh expires" value={`in ${MOCK_USER.refreshExp}`} />
-          </Section>
+          {accessToken && (
+            <Section title="Session">
+              <Row
+                label="Access token"
+                value={maskToken(accessToken)}
+                dim
+              />
+            </Section>
+          )}
 
           {/* Activity stats */}
           <Section title="Activity">
@@ -78,11 +73,17 @@ export function ProfilePage() {
             <Row label="Screenshots"     value={String(totalScreenshots)} />
           </Section>
 
+          {/* Password change */}
+          <PasswordChangeSection changePassword={changePassword} />
+
           {/* Danger zone */}
           <Section title="Danger Zone">
             <div className="flex items-center justify-between py-1">
               <span className="font-mono text-[11px] text-slate-400">Sign out of this session</span>
-              <button className="font-mono text-[10px] tracking-widest uppercase px-3 py-1.5 border border-danger/40 text-danger hover:bg-danger/8 hover:border-danger transition-colors duration-150">
+              <button
+                onClick={logout}
+                className="font-mono text-[10px] tracking-widest uppercase px-3 py-1.5 border border-danger/40 text-danger hover:bg-danger/8 hover:border-danger transition-colors duration-150"
+              >
                 Sign Out
               </button>
             </div>
@@ -91,6 +92,97 @@ export function ProfilePage() {
         </div>
       </div>
     </PageLayout>
+  )
+}
+
+// ── Password change ────────────────────────────────────────────────
+
+function PasswordChangeSection({
+  changePassword,
+}: {
+  changePassword: (current: string, next: string) => Promise<void>
+}) {
+  const [current,  setCurrent]  = useState('')
+  const [next,     setNext]     = useState('')
+  const [loading,  setLoading]  = useState(false)
+  const [message,  setMessage]  = useState<{ text: string; ok: boolean } | null>(null)
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setMessage(null)
+    setLoading(true)
+    try {
+      await changePassword(current, next)
+      setMessage({ text: 'Password changed successfully', ok: true })
+      setCurrent('')
+      setNext('')
+    } catch (err) {
+      setMessage({
+        text: err instanceof Error ? err.message : 'Failed to change password',
+        ok: false,
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="border border-border bg-surface/20">
+      <div className="px-4 py-2 border-b border-border bg-void/30">
+        <span className="label-ops">Security</span>
+      </div>
+      <form onSubmit={handleSubmit} className="px-4 py-3 space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <label className="block font-mono text-[10px] text-slate-600 uppercase tracking-wider">
+              Current password
+            </label>
+            <input
+              type="password"
+              value={current}
+              onChange={e => setCurrent(e.target.value)}
+              placeholder="••••••••"
+              required
+              className="w-full bg-void border border-border px-3 py-2 font-mono text-xs text-slate-200 placeholder-slate-700 focus:outline-none focus:border-border-bright transition-colors"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block font-mono text-[10px] text-slate-600 uppercase tracking-wider">
+              New password
+            </label>
+            <input
+              type="password"
+              value={next}
+              onChange={e => setNext(e.target.value)}
+              placeholder="••••••••"
+              required
+              className="w-full bg-void border border-border px-3 py-2 font-mono text-xs text-slate-200 placeholder-slate-700 focus:outline-none focus:border-border-bright transition-colors"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            disabled={loading}
+            className="
+              font-mono text-[10px] tracking-widest uppercase px-3 py-1.5
+              border border-border-bright text-slate-400
+              hover:border-slate-500 hover:text-slate-200
+              disabled:opacity-40 disabled:cursor-not-allowed
+              transition-colors duration-150
+            "
+          >
+            {loading ? 'Saving…' : 'Change Password'}
+          </button>
+          {message && (
+            <span className={`font-mono text-[10px] ${message.ok ? 'text-agent' : 'text-danger'}`}>
+              {message.text}
+            </span>
+          )}
+        </div>
+      </form>
+    </div>
   )
 }
 
@@ -116,7 +208,6 @@ function Row({
 }: {
   label: string
   value: string
-  mono?: boolean
   dim?: boolean
 }) {
   return (

@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import type { Worker } from '../../types'
+import { useAuth } from '../../context/AuthContext'
 
 interface TopBarProps {
   workers: Worker[]
@@ -16,6 +17,7 @@ export function TopBar({
   logPanelOpen = false,
   onLogPanelToggle,
 }: TopBarProps) {
+  const { user } = useAuth()
   const onlineCount   = workers.filter(w => w.status !== 'OFFLINE').length
   const busyCount     = workers.filter(w => w.status === 'BUSY').length
   const startingCount = workers.filter(w => w.status === 'STARTING').length
@@ -97,9 +99,11 @@ export function TopBar({
           "
         >
           <span className="w-5 h-5 border border-border-bright flex items-center justify-center group-hover:border-slate-500 transition-colors">
-            <span className="font-mono text-[9px] text-slate-600 group-hover:text-slate-400">op</span>
+            <span className="font-mono text-[9px] text-slate-600 group-hover:text-slate-400">
+              {user ? user.email[0].toUpperCase() : 'op'}
+            </span>
           </span>
-          operator
+          {user ? user.email.split('@')[0] : 'operator'}
         </Link>
       </div>
     </header>
