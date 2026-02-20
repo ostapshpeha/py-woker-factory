@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { PageLayout } from '../components/layout/PageLayout'
-import { mockWorkers, mockTasks, mockScreenshots } from '../data/mockData'
-import type { WorkerStatus } from '../types'
+import { getWorker, stopWorker, startWorker, deleteWorker } from '../lib/api'
+import type { Worker, WorkerStatus } from '../types'
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('en-GB', {
@@ -28,54 +28,88 @@ const STATUS_BADGE: Record<WorkerStatus, string> = {
 export function WorkerDetailPage() {
   const { workerId } = useParams<{ workerId: string }>()
   const navigate = useNavigate()
+  const workerIdNum = workerId ? parseInt(workerId, 10) : NaN
 
-  const base = mockWorkers.find(w => w.id === workerId)
-  const [worker, setWorker] = useState(base ?? null)
-  const [deleted, setDeleted] = useState(false)
+  const [worker, setWorker]   = useState<Worker | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionBusy, setActionBusy]   = useState(false)
 
-  const tasks       = mockTasks.filter(t => t.workerId === workerId)
-  const screenshots = mockScreenshots.filter(s => s.workerId === workerId)
-  const failedCount = tasks.filter(t => t.status === 'FAILED').length
+  const load = useCallback(async () => {
+    if (isNaN(workerIdNum)) { setError('Invalid worker ID'); setLoading(false); return }
+    try {
+      setWorker(await getWorker(workerIdNum))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load worker')
+    } finally {
+      setLoading(false)
+    }
+  }, [workerIdNum])
 
-  const canToggle = worker?.status === 'IDLE' || worker?.status === 'OFFLINE'
-  const isActive  = worker?.status !== 'OFFLINE'
+  useEffect(() => { void load() }, [load])
 
-  function handleToggle() {
-    if (!worker || !canToggle) return
-    setWorker({ ...worker, status: worker.status === 'OFFLINE' ? 'IDLE' : 'OFFLINE' })
+  async function handleToggle() {
+    if (!worker || actionBusy) return
+    setActionBusy(true)
+    setActionError(null)
+    try {
+      if (worker.status === 'OFFLINE') await startWorker(worker.id)
+      else await stopWorker(worker.id)
+      await load()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Action failed')
+    } finally {
+      setActionBusy(false)
+    }
   }
 
-  function handleDelete() {
-    setDeleted(true)
-    setTimeout(() => navigate('/'), 800)
+  async function handleDelete() {
+    if (!worker || actionBusy) return
+    setActionBusy(true)
+    setActionError(null)
+    try {
+      await deleteWorker(worker.id)
+      navigate('/')
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Delete failed')
+      setActionBusy(false)
+    }
   }
 
-  if (deleted) {
+  if (loading) {
     return (
       <PageLayout>
         <div className="flex-1 flex items-center justify-center">
-          <p className="font-mono text-[11px] text-danger uppercase tracking-widest animate-pulse">
-            worker removed
-          </p>
+          <span className="font-mono text-[10px] text-slate-700 uppercase tracking-widest animate-pulse">
+            loading…
+          </span>
         </div>
       </PageLayout>
     )
   }
 
-  if (!worker) {
+  if (error || !worker) {
     return (
       <PageLayout>
         <div className="flex-1 flex items-center justify-center">
           <p className="font-mono text-[11px] text-slate-700 uppercase tracking-widest">
-            worker not found
+            {error ?? 'worker not found'}
           </p>
         </div>
       </PageLayout>
     )
   }
 
+  const canToggle  = worker.status === 'IDLE' || worker.status === 'OFFLINE'
+  const isActive   = worker.status !== 'OFFLINE'
+  const activeTask = worker.tasks?.find(t => t.status === 'PROCESSING')
+  const completedCount = worker.tasks?.filter(t => t.status === 'COMPLETED').length ?? 0
+  const failedCount    = worker.tasks?.filter(t => t.status === 'FAILED').length    ?? 0
+
   return (
-    <PageLayout activeWorkerId={workerId}>
+    <PageLayout activeWorkerId={workerIdNum}>
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-5 py-2.5 border-b border-border bg-surface/30 shrink-0">
         <Link
@@ -106,10 +140,10 @@ export function WorkerDetailPage() {
                   {worker.status}
                 </span>
               </div>
-              <p className="font-mono text-[11px] text-slate-500 mt-0.5">{worker.id}</p>
-              {worker.currentTask && (
+              <p className="font-mono text-[11px] text-slate-500 mt-0.5">#{worker.id}</p>
+              {activeTask && (
                 <p className="font-mono text-[10px] text-slate-600 mt-1 truncate">
-                  ▸ {worker.currentTask}
+                  ▸ {activeTask.prompt}
                 </p>
               )}
             </div>
@@ -117,17 +151,16 @@ export function WorkerDetailPage() {
 
           {/* Details */}
           <Section title="Details">
-            <Row label="VNC port"  value={`:${worker.port}`} />
-            <Row label="Created"   value={formatDate(worker.createdAt)} />
+            <Row label="VNC port"  value={worker.vnc_port ? `:${worker.vnc_port}` : '—'} />
+            <Row label="Created"   value={worker.created_at ? formatDate(worker.created_at) : '—'} />
             <Row label="Status"    value={worker.status} />
           </Section>
 
           {/* Activity */}
           <Section title="Activity">
-            <Row label="Tasks completed" value={String(worker.completedTasks)} />
-            <Row label="Tasks total"     value={String(tasks.length)} />
+            <Row label="Tasks completed" value={String(completedCount)} />
+            <Row label="Tasks total"     value={String(worker.tasks?.length ?? 0)} />
             <Row label="Failed tasks"    value={String(failedCount)} dim={failedCount > 0} />
-            <Row label="Screenshots"     value={String(screenshots.length)} />
           </Section>
 
           {/* Navigation */}
@@ -150,24 +183,29 @@ export function WorkerDetailPage() {
 
           {/* Controls */}
           <Section title="Controls">
-            <div className="flex items-center gap-2 py-2.5">
-              <button
-                onClick={handleToggle}
-                disabled={!canToggle}
-                className={`
-                  font-mono text-[10px] tracking-widest uppercase px-3 py-1.5 border
-                  transition-colors duration-150
-                  disabled:opacity-30 disabled:cursor-not-allowed
-                  ${isActive
-                    ? 'border-warning/40 text-warning hover:bg-warning/8 hover:border-warning'
-                    : 'border-agent/40  text-agent  hover:bg-agent/8  hover:border-agent'
-                  }
-                `}
-              >
-                {isActive ? '⏹ Stop Worker' : '▷ Start Worker'}
-              </button>
-              {worker.status === 'BUSY' && (
-                <span className="font-mono text-[10px] text-slate-700">busy — cannot stop</span>
+            <div className="flex flex-col gap-2 py-2.5">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => void handleToggle()}
+                  disabled={!canToggle || actionBusy}
+                  className={`
+                    font-mono text-[10px] tracking-widest uppercase px-3 py-1.5 border
+                    transition-colors duration-150
+                    disabled:opacity-30 disabled:cursor-not-allowed
+                    ${isActive
+                      ? 'border-warning/40 text-warning hover:bg-warning/8 hover:border-warning'
+                      : 'border-agent/40  text-agent  hover:bg-agent/8  hover:border-agent'
+                    }
+                  `}
+                >
+                  {actionBusy ? '…' : isActive ? '⏹ Stop Worker' : '▷ Start Worker'}
+                </button>
+                {worker.status === 'BUSY' && (
+                  <span className="font-mono text-[10px] text-slate-700">busy — cannot stop</span>
+                )}
+              </div>
+              {actionError && (
+                <p className="font-mono text-[10px] text-danger/80">{actionError}</p>
               )}
             </div>
           </Section>
@@ -179,8 +217,9 @@ export function WorkerDetailPage() {
                 Permanently remove this worker and its container
               </span>
               <button
-                onClick={handleDelete}
-                className="font-mono text-[10px] tracking-widest uppercase px-3 py-1.5 border border-danger/40 text-danger hover:bg-danger/8 hover:border-danger transition-colors duration-150"
+                onClick={() => void handleDelete()}
+                disabled={actionBusy}
+                className="font-mono text-[10px] tracking-widest uppercase px-3 py-1.5 border border-danger/40 text-danger hover:bg-danger/8 hover:border-danger transition-colors duration-150 disabled:opacity-30"
               >
                 Delete
               </button>

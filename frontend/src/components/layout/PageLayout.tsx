@@ -1,21 +1,32 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Worker } from '../../types'
-import { mockWorkers } from '../../data/mockData'
+import { getWorkers, getWorker } from '../../lib/api'
 import { TopBar } from './TopBar'
 import { Sidebar } from './Sidebar'
 
 interface PageLayoutProps {
   children: React.ReactNode
   /** Worker to highlight as selected in the sidebar */
-  activeWorkerId?: string
+  activeWorkerId?: number
+}
+
+async function fetchAllWorkers(): Promise<Worker[]> {
+  const summaries = await getWorkers()
+  if (summaries.length === 0) return []
+  return Promise.all(summaries.map(s => getWorker(s.id)))
 }
 
 export function PageLayout({ children, activeWorkerId }: PageLayoutProps) {
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [workers, setWorkers]         = useState<Worker[]>([])
 
-  const selectedWorker = mockWorkers.find(w => w.id === activeWorkerId) ?? null
+  useEffect(() => {
+    fetchAllWorkers().then(setWorkers).catch(() => {/* silent */})
+  }, [])
+
+  const selectedWorker = workers.find(w => w.id === activeWorkerId) ?? null
 
   const handleSelectWorker = useCallback((worker: Worker) => {
     setSidebarOpen(false)
@@ -25,7 +36,7 @@ export function PageLayout({ children, activeWorkerId }: PageLayoutProps) {
   return (
     <div className="flex flex-col h-screen bg-abyss overflow-hidden">
       <TopBar
-        workers={mockWorkers}
+        workers={workers}
         sidebarOpen={sidebarOpen}
         onMenuToggle={() => setSidebarOpen(p => !p)}
       />
@@ -43,7 +54,7 @@ export function PageLayout({ children, activeWorkerId }: PageLayoutProps) {
         />
 
         <Sidebar
-          workers={mockWorkers}
+          workers={workers}
           selectedWorker={selectedWorker}
           isOpen={sidebarOpen}
           onSelectWorker={handleSelectWorker}

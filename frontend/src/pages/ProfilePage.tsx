@@ -1,8 +1,8 @@
-import { useState, type FormEvent } from 'react'
+import { useState, useEffect, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { PageLayout } from '../components/layout/PageLayout'
-import { mockWorkers, mockTasks, mockScreenshots } from '../data/mockData'
 import { useAuth } from '../context/AuthContext'
+import { getWorkers, getWorker, getScreenshots } from '../lib/api'
 
 function maskToken(token: string): string {
   return token.slice(0, 6) + '••••••••••••••••' + token.slice(-4)
@@ -11,9 +11,25 @@ function maskToken(token: string): string {
 export function ProfilePage() {
   const { user, logout, changePassword } = useAuth()
 
-  const totalTasks       = mockTasks.length
-  const totalScreenshots = mockScreenshots.length
-  const activeWorkers    = mockWorkers.filter(w => w.status !== 'OFFLINE').length
+  const [activeWorkers,    setActiveWorkers]    = useState<number | null>(null)
+  const [totalTasks,       setTotalTasks]       = useState<number | null>(null)
+  const [totalScreenshots, setTotalScreenshots] = useState<number | null>(null)
+
+  useEffect(() => {
+    async function loadStats() {
+      try {
+        const summaries = await getWorkers()
+        setActiveWorkers(summaries.filter(w => w.status !== 'OFFLINE').length)
+        const [workers, screenshotArrays] = await Promise.all([
+          Promise.all(summaries.map(s => getWorker(s.id))),
+          Promise.all(summaries.map(s => getScreenshots(s.id).catch(() => []))),
+        ])
+        setTotalTasks(workers.reduce((sum, w) => sum + (w.tasks?.length ?? 0), 0))
+        setTotalScreenshots(screenshotArrays.reduce((sum, arr) => sum + arr.length, 0))
+      } catch { /* stats remain null */ }
+    }
+    void loadStats()
+  }, [])
 
   const accessToken = localStorage.getItem('access_token') ?? ''
 
@@ -68,9 +84,9 @@ export function ProfilePage() {
 
           {/* Activity stats */}
           <Section title="Activity">
-            <Row label="Active workers"  value={`${activeWorkers} / 3`} />
-            <Row label="Total tasks"     value={String(totalTasks)} />
-            <Row label="Screenshots"     value={String(totalScreenshots)} />
+            <Row label="Active workers"  value={activeWorkers    !== null ? `${activeWorkers} / 3` : '—'} />
+            <Row label="Total tasks"     value={totalTasks       !== null ? String(totalTasks)       : '—'} />
+            <Row label="Screenshots"     value={totalScreenshots !== null ? String(totalScreenshots) : '—'} />
           </Section>
 
           {/* Password change */}
