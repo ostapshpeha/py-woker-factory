@@ -5,7 +5,7 @@ import {
   useEffect,
   useCallback,
 } from 'react'
-import { apiJson, setTokens, clearTokens } from '../lib/api'
+import { apiJson, apiFetch, setTokens, clearTokens } from '../lib/api'
 
 export interface AuthUser {
   id: number
@@ -68,6 +68,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const logout = useCallback(() => {
+    // Fire-and-forget: revoke server-side refresh token, then clear locally
+    apiFetch('/routers/v1/user/logout', { method: 'POST' }).catch(() => {})
     clearTokens()
     setUser(null)
   }, [])
