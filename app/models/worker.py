@@ -49,6 +49,10 @@ class WorkerModel(Base):
 
     status: Mapped[WorkerStatus] = mapped_column(String, default=WorkerStatus.OFFLINE)
 
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
     tasks: Mapped[List["TaskModel"]] = relationship(
         "TaskModel", back_populates="worker", cascade="all, delete-orphan"
     )
