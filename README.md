@@ -251,7 +251,44 @@ All endpoints are under `/routers/v1/`:
 ## Constraints
 
 - **Max 3 workers per user**
-- **Screenshot cooldown** — 30 seconds between captures per worker
+- **Screenshot cooldown** — 30 seconds between captures per worker (10 seconds in production)
 - **Task timeout** — 5 minutes soft limit, 5 min 10 sec hard kill
 - **Worker init time** — ~3–4 minutes for package installation on first spawn
 - The `Dockerfile-worker` image must be **pre-built** and tagged `custom-kasm-worker:latest`
+
+
+## OpenCode
+
+Project is open to new features, there's space for:
+
+- **Stripe integration** - Buying additional slots for workers
+- **Send Grid** — Account confirmation and password changing via email
+- **Telegram - aiogram** — Notification when task was failed
+- **Better AI** — Gemini 2.5 is cheap, but bad in computer-use, the best model for that would be 
+Claude Sonnet which is pretty expensive.
+- **Containers optimisation. Kubernetes** - More VMs - more problems, what will we do with a thousand machines?
+In production, we need Kubernetes to manage these clusters of VMs, also cheaper and more simple KASM image.
+
+
+## Architecture Diagrams
+
+### System Architecture
+![System Architecture](drawio/worker-factory.drawio.png)
+
+### Data Models
+![Data Models](drawio/models.drawio.png)
+
+---
+
+## Screenshots
+
+![Screenshot 1](drawio/Screenshot_9.png)
+![Screenshot 2](drawio/Screenshot_10.png)
+![Screenshot 3](drawio/Screenshot_11.png)
+![Screenshot 4](drawio/Screenshot_12.png)
+
+---
+
+## Demo
+
+[![Worker Factory — Demo](https://img.youtube.com/vi/tqWMVTPINfw/maxresdefault.jpg)](https://youtu.be/tqWMVTPINfw?si=HXg1DHoyL_u7ItLd)
